@@ -5,6 +5,7 @@ terraform {
       version = "~> 5.0"
     }
   }
+  
   backend "s3" {
     bucket         = "laba-6-7-daria"
     key            = "terraform.tfstate"
@@ -12,44 +13,75 @@ terraform {
     dynamodb_table = "lab-my-tf-lockid"
   }
 }
+
 provider "aws" {
   region = "eu-central-1"
 }
-variable "REPOSITORY_URI" {
-  type = string
+
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+  owners = ["099720109477"] # Canonical
 }
-resource "aws_lightsail_container_service" "flask_app" {
-  name  = "flask-app-service"
-  power = "nano"
-  scale = 1
-  private_registry_access {
-    ecr_image_puller_role {
-      is_active = true
-    }
+
+resource "aws_security_group" "web_sg" {
+  name        = "flask-security-group"
+  description = "Allow HTTP traffic"
+
+  ingress {
+    from_port   = 5000
+    to_port     = 5000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
-resource "aws_lightsail_container_service_deployment_version" "flask_deploy" {
-  container {
-    container_name = "flask-container"
-    image          = "${var.REPOSITORY_URI}:latest"
-    ports = {
-      5000 = "HTTP"
-    }
+
+resource "aws_instance" "app_server" {
+  ami           = data.aws_ami.ubuntu.id
+  instance_type = "t2.micro" # Безкоштовний тип
+  security_groups = [aws_security_group.web_sg.name]
+
+  user_data = <<-EOF
+              #!/bin/bash
+              sudo apt-get update
+              sudo apt-get install -y python3-pip
+              pip3 install flask
+              
+              echo "from flask import Flask" > /home/ubuntu/app.py
+              echo "app = Flask(__name__)" >> /home/ubuntu/app.py
+              echo "@app.route('/')" >> /home/ubuntu/app.py
+              echo "def hello(): return '<h1>Hello from EC2! Lab 6-7 completed WITHOUT Lightsail.</h1>'" >> /home/ubuntu/app.py
+              echo "if __name__ == '__main__': app.run(host='0.0.0.0', port=5000)" >> /home/ubuntu/app.py
+              
+              nohup python3 /home/ubuntu/app.py &
+              EOF
+
+  tags = {
+    Name = "Lab6-7-EC2"
   }
-  public_endpoint {
-    container_name = "flask-container"
-    container_port = 5000
-    health_check {
-      healthy_threshold   = 2
-      unhealthy_threshold = 2
-      timeout_seconds     = 2
-      interval_seconds    = 5
-      path                = "/"
-      success_codes       = "200-499"
-    }
-  }
-  service_name = aws_lightsail_container_service.flask_app.name
 }
-output "url" {
-  value = aws_lightsail_container_service.flask_app.url
+
+output "public_ip" {
+  value = "http://${aws_instance.app_server.public_ip}:5000"
 }
